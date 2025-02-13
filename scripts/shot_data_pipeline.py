@@ -81,11 +81,15 @@ class NHLDataPipeline:
         """Save collected shot data to CSV in the flat_files directory"""
         import os
         
+        # Define the project root directory path
+        project_root = '/workspaces/expected_goals_model'
+        
         # Create flat_files directory if it doesn't exist
-        os.makedirs('../flat_files', exist_ok=True)
+        flat_files_dir = os.path.join(project_root, 'flat_files')
+        os.makedirs(flat_files_dir, exist_ok=True)
         
         # Construct the full file path
-        file_path = os.path.join('../flat_files', filename)
+        file_path = os.path.join(flat_files_dir, filename)
         
         # Save the data
         df = pd.DataFrame(self.shots_data)
