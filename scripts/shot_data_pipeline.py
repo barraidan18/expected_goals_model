@@ -7,7 +7,7 @@ import json
 class NHLDataPipeline:
     def __init__(self):
         self.base_url = "https://api-web.nhle.com/v1"
-        self.shots_data = []
+        self.plays_data = []  # Renamed from shots_data to plays_data
     
     def get_schedule(self, start_date, end_date):
         """Fetch NHL game schedule between two dates"""
@@ -18,7 +18,6 @@ class NHLDataPipeline:
             response.raise_for_status()
             schedule_data = response.json()
             
-            # Find the specific game week containing our date
             all_games = []
             for week in schedule_data.get('gameWeek', []):
                 if week.get('date') == start_date:
@@ -49,56 +48,77 @@ class NHLDataPipeline:
             print(f"Error fetching game data: {str(e)}")
             return {'plays': []}
     
-    def extract_shot_data(self, play_data, game_id):
-        """Extract relevant shot information from play data"""
-        shot_info = {
-            'game_id': game_id,
-            'event_index': play_data.get('eventId'),
-            'period': play_data.get('period', {}).get('periodNumber'),
-            'period_time': play_data.get('timeInPeriod'),
+    def extract_play_data(self, play_data, game_data):
+        """Extract relevant information from play data for all event types"""
+        play_info = {
+            'game_id': game_data['id'],
+            'event_id': play_data.get('eventId'),
+            'event_type': play_data.get('typeDescKey'),
+            
+            # Period information from periodDescriptor
+            'period': play_data.get('periodDescriptor', {}).get('number'),
+            'period_type': play_data.get('periodDescriptor', {}).get('periodType'),
+            
+            # Timing information
+            'time_in_period': play_data.get('timeInPeriod'),
+            'time_remaining': play_data.get('timeRemaining'),
+            
+            # Coordinates and zone (if available in details)
             'coordinates_x': play_data.get('details', {}).get('xCoord'),
             'coordinates_y': play_data.get('details', {}).get('yCoord'),
-            'shot_type': play_data.get('details', {}).get('shotType'),
-            'shooter': play_data.get('details', {}).get('shootingPlayerId'),
-            'shooter_name': play_data.get('details', {}).get('shooterName'),
-            'team': play_data.get('team', {}).get('abbrev'),
-            'event_type': play_data.get('typeCode'),
-            'is_goal': play_data.get('typeCode') == 'GOAL',
-            # Game state information
-            'home_score': play_data.get('homeScore'),
-            'away_score': play_data.get('awayScore'),
-            'home_team': play_data.get('homeTeam', {}).get('abbrev'),
-            'away_team': play_data.get('awayTeam', {}).get('abbrev'),
-            'strength': play_data.get('situationCode'),  # e.g., 'EV', 'PP', 'SH'
-            'empty_net': play_data.get('details', {}).get('isEmptyNet'),
-            'game_time_remaining': play_data.get('timeRemaining')
+            'zone_code': play_data.get('details', {}).get('zoneCode'),
+            
+            # Team information
+            'event_owner_team_id': play_data.get('details', {}).get('eventOwnerTeamId'),
+            'away_team_id': game_data['awayTeam']['id'],
+            'home_team_id': game_data['homeTeam']['id'],
+            
+            # Game situation
+            'situation_code': play_data.get('situationCode'),
+            'home_team_defending_side': play_data.get('homeTeamDefendingSide'),
         }
-        return shot_info
-        return shot_info
+        
+        # Add shot-specific details if available
+        details = play_data.get('details', {})
+        if play_data.get('typeDescKey') in ['shot-on-goal', 'goal', 'missed-shot', 'blocked-shot']:
+            play_info.update({
+                'shot_type': details.get('shotType'),
+                'shooter_id': details.get('shootingPlayerId'),
+                'goalie_id': details.get('goalieInNetId'),
+                'away_sog': details.get('awaySOG'),
+                'home_sog': details.get('homeSOG')
+            })
+            
+            # Add goal-specific details
+            if play_data.get('typeDescKey') == 'goal':
+                play_info.update({
+                    'scoring_player_id': details.get('scoringPlayerId'),
+                    'assist1_player_id': details.get('assist1PlayerId'),
+                    'assist2_player_id': details.get('assist2PlayerId'),
+                    'away_score': details.get('awayScore'),
+                    'home_score': details.get('homeScore')
+                })
+        
+        return play_info
     
     def process_game(self, game_id, debug=False):
-        """Process all shots from a single game"""
+        """Process all plays from a single game"""
         game_data = self.get_game_data(game_id)
         plays = game_data.get('plays', [])
         
         if debug and plays:
-            # Print the first shot/goal event's full data structure
-            for play in plays:
-                if play.get('typeDescKey') in ['shot', 'goal', 'missed-shot', 'blocked-shot']:
-                    print("\nSample play data structure:")
-                    print(json.dumps(play, indent=2))
-                    break
+            # Print the first play event's full data structure
+            print("\nSample play data structure:")
+            print(json.dumps(plays[0], indent=2))
         
-        shot_events = []
+        play_events = []
         for play in plays:
-            event_type = play.get('typeDescKey')
-            if event_type in ['shot', 'goal', 'missed-shot', 'blocked-shot']:
-                shot_events.append(self.extract_shot_data(play, game_id))
+            play_events.append(self.extract_play_data(play, game_data))
         
-        return shot_events
+        return play_events
     
     def collect_data(self, start_date, end_date, debug=False):
-        """Collect shot data for all games in the date range"""
+        """Collect play-by-play data for all games in the date range"""
         schedule = self.get_schedule(start_date, end_date)
         
         for game in schedule.get('games', []):
@@ -108,8 +128,8 @@ class NHLDataPipeline:
             print(f"\nProcessing game {game_id}: {away_team} @ {home_team}")
             
             try:
-                shot_events = self.process_game(game_id, debug)
-                self.shots_data.extend(shot_events)
+                play_events = self.process_game(game_id, debug)
+                self.plays_data.extend(play_events)
                 if debug:
                     # Exit after processing one game in debug mode
                     break
@@ -118,12 +138,12 @@ class NHLDataPipeline:
                 print(f"Error processing game {game_id}: {str(e)}")
                 
         if debug:
-            print("\nFirst processed shot data:")
-            if self.shots_data:
-                print(json.dumps(self.shots_data[0], indent=2))
+            print("\nFirst processed play data:")
+            if self.plays_data:
+                print(json.dumps(self.plays_data[0], indent=2))
     
     def save_to_csv(self, filename):
-        """Save collected shot data to CSV in the flat_files directory"""
+        """Save collected play data to CSV in the flat_files directory"""
         import os
         
         # Define the project root directory path
@@ -137,7 +157,7 @@ class NHLDataPipeline:
         file_path = os.path.join(flat_files_dir, filename)
         
         # Save the data
-        df = pd.DataFrame(self.shots_data)
+        df = pd.DataFrame(self.plays_data)
         df.to_csv(file_path, index=False)
         print(f"Data saved to {file_path}")
 
@@ -150,4 +170,4 @@ if __name__ == "__main__":
     end_date = "2024-01-31"
     
     pipeline.collect_data(start_date, end_date)
-    pipeline.save_to_csv("nhl_shots_data.csv")  # Will be saved in ./flat_files/nhl_shots_data.csv
+    pipeline.save_to_csv("nhl_plays_data.csv")  # Will be saved in ./flat_files/nhl_plays_data.csv
